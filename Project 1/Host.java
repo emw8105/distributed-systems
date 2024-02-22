@@ -5,12 +5,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Host {
     private static final int NUM_PROCESSES = 4;
-    private static final int BASE_PORT = 0; // available port number for the processes to communicate
-    // private static final String[] hosts = {"dc30", "dc31", "dc32", "dc33"};
+    private static final int BASE_PORT = 40000; // available port number for the processes to communicate
 
     public static void main(String[] args) {
         if (args.length < 4) {
-            System.err.println("Must provide this host and three other hosts as command-line arguments.\nExample: java Main dc30 dc31 dc32 dc33");
+            System.err.println("Must provide this host followed by three other hosts as command-line arguments.\nExample: java Main dc30 dc31 dc32 dc33");
             return;
         }
 
@@ -31,58 +30,85 @@ public class Host {
 			System.out.println("Listening for connections on port " + serverSocket.getLocalPort());
             ConcurrentHashMap<String, Socket> connectedHosts = new ConcurrentHashMap<>();
 
-            new Thread(() -> {
+			serverSocket.setSoTimeout(1000); // every second, check to make sure that we should still be waiting on processes
+            Thread serverThread = new Thread(() -> {
                 try {
-                    // continue listening until we are connected to all other processes excluding ourselves
                     while (connectedHosts.size() < NUM_PROCESSES - 1) {
-						try {
-							System.out.println("yooo");
-                        	Socket socket = serverSocket.accept();
-							System.out.println("made it inside while loop");
-                        	// when a connection is received, read the sent hostname add the host to the connectedHosts map
-                        	BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                        	String host = in.readLine();
-                        	connectedHosts.put(host, socket);
-                        	System.out.println(thisHost + " received connection from: " + host);
-                        	socket.close();
-                        	
-							// If this host has not connected to the host that just connected, connect to it
-                        	if (!otherHosts.contains(host)) {
-                            	Socket newSocket = new Socket(host, BASE_PORT);
-                            	PrintWriter out = new PrintWriter(newSocket.getOutputStream(), true);
-                            	out.println(thisHost);
-                            	connectedHosts.put(host, newSocket);
-                            	System.out.println("Connected to: " + host);
-                        	}
-						} catch (Exception e) {
-							System.out.println("failing");
-							// try/catch used to avoid the error normally returned from having no other processes waiting
-						}
-                    }
+						System.out.println("connectedHosts size = " + connectedHosts.size());
+                        Socket socket = serverSocket.accept();
+                        // when a connection is received, read the sent hostname add the host to the connectedHosts map
+                        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                        String host = in.readLine();
+                        connectedHosts.put(host, socket);
+                        System.out.println(thisHost + " received connection from: " + host);
+					}
+				} catch (SocketTimeoutException e) {
+					// used to force checking of the loop conditions instead of blocking forever
                 } catch (Exception e) {
-					System.out.println("sad yooo");
                     e.printStackTrace();
                 }
-            }).start();
+
+				// prep the server for receiving and blocking messages
+				if(connectedHosts.size() == NUM_PROCESSES-1) {
+					System.out.println("All sockets are connected for host " + thisHost);
+
+
+
+
+
+
+				}
+            });
+			serverThread.start();
+			Thread.sleep(2000);
 
             // connect to all other hosts and send this host's hostname
-            for (String host : otherHosts) {
-                Socket socket = new Socket(host, BASE_PORT); // throwing error currently
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-                out.println(thisHost);
-                socket.close();
-                System.out.println("Connected to: " + host);
+			while(connectedHosts.size() < NUM_PROCESSES-1) {
+            	for (String host : otherHosts) {
+					if(!connectedHosts.containsKey(host)) {
+						try {
+                			Socket socket = new Socket(host, BASE_PORT); // possible that baseport will never work
+                			PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                			out.println(thisHost);
+							connectedHosts.put(host, socket);
+                			System.out.println("Connected to: " + host);
+						} catch (ConnectException e) {
+							Thread.sleep(1000);	// wait for server to start and retry periodically
+						}
+					}
+				}
 			}
-        } catch (Exception e) {
-			System.out.println("Super Sad YOOO");
-            e.printStackTrace();
+			
+			System.out.println("Begin broadcasting messages");
+		
+			// broadcasting algorithm here
 
-			// CURRENT ISSUE:
-			// the reason this exception is being called is because serverSocket.accept() is not the one causing the error
-			// it's the new Socket call after the thread, the thread gets blocked by the .accept() but the program continues
-			// need to handle the for loop above this with the socket creation
+			
+			
+			printAllSockets(connectedHosts);
+			closeSockets(connectedHosts);
+			System.out.println("This host's server is: " + serverThread.getState());
+        } catch (Exception e) {
+			System.out.println("outer fail:");
+            e.printStackTrace();
         }
     }
+
+	public static void printAllSockets(ConcurrentHashMap<String, Socket> connectedHosts) {
+		for(Socket socket : connectedHosts.values()) {
+			System.out.println(socket);
+		}
+	}
+
+	public static void closeSockets(ConcurrentHashMap<String, Socket> connectedHosts) {
+		for (Socket socket : connectedHosts.values()) {
+			try {
+				socket.close();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+	}
 
     public static int validateHostname(String hostname) {
         // check that the hostname starts with "dc"
