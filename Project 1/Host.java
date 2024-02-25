@@ -1,5 +1,4 @@
 import java.net.*;
-import java.nio.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,119 +42,121 @@ public class Host {
 		Collections.sort(allHosts); // sort the hosts so that each process has the same index relationship to the vector timestamp
 
         try {
-			// start a server socket to listen for incoming connections
+            // start a server socket to listen for incoming connections
+            // connectedHosts stores the socket connections to all other processes
 			serverSocket = new ServerSocket(BASE_PORT);
-			System.out.println("Listening for connections on port " + serverSocket.getLocalPort());
+            System.out.println("Listening for connections on port " + serverSocket.getLocalPort());
+            //ConcurrentHashMap<String, Socket> connectedHosts = new ConcurrentHashMap<>();
 
-			serverSocket.setSoTimeout(1000); // every second, check to make sure that we should still be waiting on processes
-
-			// Create a selector
-			Selector selector = Selector.open();
-
-			Thread serverThread = new Thread(() -> {
-				try {
-					while (connectedHosts.size() < NUM_PROCESSES - 1) {
+            serverSocket.setSoTimeout(1000); // every second, check to make sure that we should still be waiting on processes
+            Thread serverThread = new Thread(() -> {
+                try {
+                    while (connectedHosts.size() < NUM_PROCESSES - 1) {
 						System.out.println("Waiting for connections, current connected hosts: " + connectedHosts.size());
-						Socket socket = serverSocket.accept();
-
-						if(socket == null) {
+                        Socket socket = serverSocket.accept();
+                        // when a connection is received, read the sent hostname add the host to the connectedHosts map
+                        if(socket == null) {
 							System.out.println("Socket is null");
 							continue;
 						}
-
-						// Configure the socket to be non-blocking and register it with the selector
-						socket.configureBlocking(false);
-						socket.register(selector, SelectionKey.OP_READ);
-
-						String host = socket.getInetAddress().getHostName();
+						BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                        //String host = in.readLine();
+            			String host = socket.getInetAddress().getHostName();
 						if(host == null) {
 							System.out.println("Host is null");
 							continue;
 						}
 
-						connectedHosts.put(host, socket);
-						System.out.println(thisHost + " received connection from: " + host);
+                        connectedHosts.put(host, socket);
+                        System.out.println(thisHost + " received connection from: " + host);
+
+						// start a new thread to listen for messages from the connected host
+						new Thread(() -> {
+							try {
+								String line;
+								while((line = in.readLine()) != null) {
+									String[] parts = line.split(" ", 2);
+									String sender = parts[0];
+									String content = parts[1];
+									int[] timestamp = Arrays.stream(in.readLine().split(" ")).mapToInt(Integer::parseInt).toArray();
+
+									Message message = new Message(sender, content, timestamp);
+									buffer.add(message);
+									System.out.println("Received message from " + sender + ": " + content);
+
+									while(!buffer.isEmpty() && canDeliver(buffer.peek())) {
+										Message nextMessage = buffer.poll();
+										deliver(nextMessage);
+									}
+								}
+							} catch (IOException e) {
+								System.out.println("Error in thread for socket listener");
+								e.printStackTrace();
+							}
+						}).start();
 					}
 				} catch (SocketTimeoutException e) {
 					// used to force checking of the loop conditions instead of blocking forever
-				} catch (Exception e) {
-					e.printStackTrace();
-				}
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
 
 				// prep the server for receiving and blocking messages
 				if (connectedHosts.size() == NUM_PROCESSES - 1) {
 					System.out.println("All sockets are connected for host " + thisHost);
 
-					// Start a single thread to handle all incoming messages
-					new Thread(() -> {
-						try {
-							while (true) {
-								// Wait for a socket to become ready for reading
-								selector.select();
-
-								// Iterate over the selected keys
-								Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
-								while (iterator.hasNext()) {
-									SelectionKey key = iterator.next();
-
-									if (key.isReadable()) {
-										// The socket is ready for reading
-										SocketChannel socketChannel = (SocketChannel) key.channel();
-										
-										PriorityQueue<Message> messageQueue = new PriorityQueue<>();
-
-										// Create a ByteBuffer for reading data
-										ByteBuffer buffer = ByteBuffer.allocate(1024);
-
-										// Read the data into the buffer
-										int bytesRead = socketChannel.read(buffer);
-
-										// If the channel has reached end-of-stream
-										if (bytesRead == -1) {
-											socketChannel.close();
-										} else {
-											// Flip the buffer to prepare it for reading
-											buffer.flip();
-
-											// Convert the buffer to a string
-											String line = new String(buffer.array(), 0, bytesRead).trim();
-
-											// Process the message
-											String[] parts = line.split(" ", 3);
-											String sender = parts[0];
-											String content = parts[1];
-											int[] timestamp = Arrays.stream(parts[2].split(" ")).mapToInt(Integer::parseInt).toArray();
-
-											// Create a new Message and add it to the queue
-											Message message = new Message(sender, content, timestamp);
-											messageQueue.add(message);
-										}
-
-										System.out.println("Received message from " + sender + ": " + content);
-
-										while(!messageQueue.isEmpty() && canDeliver(messageQueue.peek())) {
-											Message nextMessage = messageQueue.poll();
-											deliver(nextMessage);
-										}
-									}
-
-									// Remove the key to indicate that it's been handled
-									iterator.remove();
-								}
-							}
-						} catch (IOException e) {
-							e.printStackTrace();
-						}
-					}).start();
+					new Thread(Host::receive).start();
 				}
-			});
+            });
 			serverThread.start();
 			Thread.sleep(2000);
-		} catch (IOException e) {
-			e.printStackTrace();
-		} catch (InterruptedException e) {
-			e.printStackTrace();
-		}
+
+            // connect to all other hosts and send this host's hostname
+			// continue to try to connect to all other hosts until all connections are established
+			while(connectedHosts.size() < NUM_PROCESSES-1) {
+            	for (String host : allHosts) {
+					if(host.equals(thisHost)) {
+						continue;
+					}
+					if(!connectedHosts.containsKey(host)) {
+						try {
+                			Socket socket = new Socket(host, BASE_PORT); // possible that baseport will never work
+                			PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                			out.println(thisHost);
+							connectedHosts.put(host, socket);
+                			System.out.println("Connected to: " + host);
+						} catch (ConnectException e) {
+							Thread.sleep(1000);	// wait for server to start and retry periodically
+						}
+					}
+				}
+			}
+
+			// wait for all connections to be established before continuing
+			try {
+				Thread.sleep(2000);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+
+			// print all connected sockets to show that all connections are established
+			printAllSockets(connectedHosts);
+
+			// begin broadcasting messages, with delay to emulate network delay if needed
+			System.out.println("Begin broadcasting messages");
+			Random random = new Random();
+			for(int i = 1; i <= 100; i++) {
+				// Thread.sleep(random.nextInt(10)); // emulating network delay
+				broadcast(i);
+			}
+
+			// close all sockets and check the condition of the server thread
+			closeSockets(connectedHosts);
+			System.out.println("This host's server is: " + serverThread.getState());
+        } catch (Exception e) {
+			System.out.println("outer fail:");
+            e.printStackTrace();
+        }
     }
 
 	public static boolean canDeliver(Message message) {
