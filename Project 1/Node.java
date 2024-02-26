@@ -1,13 +1,17 @@
+// Written by Evan Wright
+// Estimated time spent: 62 hrs
+
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class Node {
     private static final int BASE_PORT = 50000;
-    private static List<Pair> messageBuffer = new ArrayList<>();
+    private static Queue<Pair> messageBuffer = new ConcurrentLinkedQueue<>();
     private static int numMessagesDelivered = 0;
     private static String[] hosts = new String[4];
 
@@ -132,18 +136,6 @@ public class Node {
                 // add the message to the buffer
                 messageBuffer.add(new Pair(message, vectorClock));
             }
-
-            // this responsibility is in the server
-            // check for and deliver eligible messages
-            // Iterator<Pair> iterator = messageBuffer.iterator();
-            // while (iterator.hasNext()) {
-            //     Pair bufferedMessage = iterator.next();
-            //     // if the message is eligible for delivery (all its causal predecessors have been delivered), deliver it and remove it from the buffer
-            //     if (isReadyForDelivery(bufferedMessage, vectorClock)) {
-            //         System.out.println("Delivering: " + bufferedMessage.toString());
-            //         iterator.remove();
-            //     }
-            // }
 
             System.out.println("Vector clock: " + Arrays.toString(vectorClock));
         }
