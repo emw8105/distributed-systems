@@ -243,6 +243,7 @@ public class Node {
             return false;
         }
     
+        Set<String> machines = new HashSet<>();
         // each host name must be in the format dcXX where XX is a number between 01 and 45 inclusive
         for (String arg : args) {
             if (!arg.matches("dc0[1-9]") && !arg.matches("dc[1-3][0-9]") && !arg.matches("dc4[0-5]")) {
