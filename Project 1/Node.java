@@ -33,7 +33,7 @@ public class Node {
                             while ((inputLine = in.readLine()) != null) {
                                 System.out.println("Received message: " + inputLine);
                                 numMessagesDelivered++;
-                                //Thread.sleep(1 + random.nextInt(5)); // Sleep for 1-5 milliseconds
+                                // Thread.sleep(1 + random.nextInt(5)); // emulate network delay
                                 onMessageReceived(inputLine, vectorClock);
                             }
                         } catch (Exception e) {
@@ -247,6 +247,11 @@ public class Node {
         for (String arg : args) {
             if (!arg.matches("dc0[1-9]") && !arg.matches("dc[1-3][0-9]") && !arg.matches("dc4[0-5]")) {
                 System.out.println("Invalid host name: " + arg + ", must be in the format dcXX where XX is a number between 01 and 45 inclusive");
+                return false;
+            }
+    
+            if (!machines.add(arg)) {
+                System.out.println("Duplicate machine entry: " + arg + ", must have 4 unique machines");
                 return false;
             }
         }
