@@ -2,7 +2,7 @@
 // This program is very similar to Project 1. It expands the causual ordering message algorithm
 // into a total ordering message algorithm. This is done by using process id's to break the ties
 // between the vector clocks that implement the Ricart-Agrawala algorithm
-// Hours spent: 12
+// Hours spent: 16
 
 import java.io.*;
 import java.net.*;
@@ -18,13 +18,13 @@ public class Node {
     }
     private static final int BASE_PORT = 50000;
     private static Queue<Pair> messageBuffer = new ConcurrentLinkedQueue<>();
-    private static List<String> deferredRequests = new ArrayList<>();
+    private static Queue<String> deferredRequests = new ConcurrentLinkedQueue<>();
     private static int numMessagesDelivered = 0;
     private static State state = State.IDLE;
     private static int repliesReceived = 0;
     private static String localHost = "";
     private static int localHostIndex;
-    private static int[] vectorClock = new int[4];
+    private static int[] vectorClock;
     private static String[] hosts = new String[4];
     private static PrintWriter[] writers = new PrintWriter[3];
     private static List<String> remoteHosts = new ArrayList<>();
@@ -45,10 +45,14 @@ public class Node {
                                     new InputStreamReader(clientSocket.getInputStream()));
                             String inputLine;
                             // read the input from the client
-                            while ((inputLine = in.readLine()) != null) {
-                                System.out.println("Received message: " + inputLine);
-                                numMessagesDelivered++;
-                                onMessageReceived(inputLine);
+                            System.out.println("Listening for messages from connection");
+                            while(true) {
+                                inputLine = in.readLine();
+                                while (inputLine != null) {
+                                    System.out.println("Received message: " + inputLine);
+                                    numMessagesDelivered++;
+                                    onMessageReceived(inputLine);
+                                }
                             }
                         } catch (Exception e) {
                             e.printStackTrace();
@@ -69,6 +73,7 @@ public class Node {
             try {
                 try (Socket socket = new Socket(host, port)) {
                     latch.countDown();
+                    System.out.println("Connection esablished with host: " + host);
                     return new PrintWriter(socket.getOutputStream(), true);
                 }
             } catch (IOException e) {
@@ -101,7 +106,7 @@ public class Node {
         localHostIndex = Arrays.asList(hosts).indexOf(args[0]);
 
         // initialize the vector clock
-        int[] vectorClock = new int[args.length];
+        vectorClock = new int[args.length];
 
         // start listening on the local port
         startServer(localPort);
@@ -116,6 +121,7 @@ public class Node {
             int finalI = i;
             new Thread(() -> {
                 writers[finalI - 1] = connectToHost(remoteHost, remotePort, latch);
+                writers[finalI-1].println("TEST TEST TEST");
                 remoteHosts.add(remoteHost); // add the remote host to the list
             }).start();
         }
@@ -123,9 +129,11 @@ public class Node {
         try {
             System.out.println(localHost + " waiting for all connections to be established...");
             latch.await(); // wait for all connections to be established
+            Thread.sleep(1000);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+        
 
         // broadcast 100 messages to all of the remote hosts
         for (int i = 1; i <= 100; i++) {
@@ -150,7 +158,6 @@ public class Node {
             // set the flag to be true to indicate there is a pending request now
             state = State.WANTED;
             hasOutstandingRequest = true;
-            vectorClock[localHostIndex]++;
 
             // for each broadcast, send a message to each connected process through their writer
             for (int j = 0; j < writers.length; j++) {
@@ -190,14 +197,20 @@ public class Node {
     // manages the sending of messages, provide a process index to send to and the type in the form of "REQUEST" or "REPLY"
     private static synchronized void sendMessage(int processIndex, String messageType) {
         PrintWriter writer = writers[processIndex];
+        vectorClock[localHostIndex]++;
 
         // MESSAGE FORMAT: "Message from <host> with vector clock <vectorClock> type <messageType>"
         // send the message to the process
         String message = "Message from " + localHost + " with vector clock " + Arrays.toString(vectorClock) + " type " + messageType;
         writer.println(message);
+        writer.flush();
+
+        if (writer.checkError()) {
+            System.out.println("An error occurred while sending the message: " + message);
+        }
 
         // add the message to the buffer
-        messageBuffer.add(new Pair(message, vectorClock));
+        //messageBuffer.add(new Pair(message, vectorClock));
     }
 
     // parses the vector clock from a received message
@@ -239,12 +252,19 @@ public class Node {
 
     // method for handling message buffering and delivery to ensure causal ordering as well as total ordering
     private static synchronized void onMessageReceived(String message) {
+        System.out.println("made it here");
         String messageType = parseMessageType(message); // parse the type from the received message (req or reply)
         int[] receivedTimestamp = parseVectorClock(message); // parse the vector clock from the received message
+        int senderIndex = getSenderIndex(message);
+
+        // update the vector clock accordingly
+        for (int i = 0; i < vectorClock.length; i++) {
+            vectorClock[i] = Math.max(vectorClock[i], receivedTimestamp[i]);
+        }
 
         if (messageType.equals("REQUEST")) {
+            System.out.println("Received request from process " + senderIndex);
             // handle request message
-            int senderIndex = getSenderIndex(message);
 
             // compare the timestamps between the two processes to determine whether to reply or defer the request
             // if currently holding or has a higher prio, then defer the request, otherwise send a reply
@@ -256,14 +276,12 @@ public class Node {
                 System.out.println("Received message from process " + senderIndex + ", deferring until critical section access complete");
                 deferredRequests.add(message);
             } else {
-                // send a reply
+                // send a reply to the requesting message
+                System.out.println("Sending reply to process " + senderIndex + "'s request");
                 sendMessage(senderIndex, "REPLY");
-                // update the vector clock after sending a reply
-                for (int i = 0; i < vectorClock.length; i++) {
-                    vectorClock[i] = Math.max(vectorClock[i], receivedTimestamp[i]);
-                }
             }
         } else if (messageType.equals("REPLY")) {
+            System.out.println("Received reply from process " + senderIndex);
             // handle reply message
             repliesReceived++;
             if (repliesReceived == remoteHosts.size()) {
@@ -278,22 +296,19 @@ public class Node {
     private static void criticalSection() {
         state = State.HELD;
         criticalSectionExecutions++;
-        System.out.println("Currently in the critical section, num times: " + criticalSectionExecutions + ", sending replies to deferred requests now");
+        System.out.println("Currently in the critical section, num times: " + criticalSectionExecutions + ", sending replies to " + deferredRequests.size() + " requests now");
 
+        int numDeferredRequests = 0;
         // process all deferred requests and send replies
         for (String deferredRequest : deferredRequests) {
             // parse the necessary information from the deferred request
             int senderIndex = getSenderIndex(deferredRequest);
-            int[] receivedTimestamp = parseVectorClock(deferredRequest);
-
-            // update the vector clock accordingly
-            for (int i = 0; i < vectorClock.length; i++) {
-                vectorClock[i] = Math.max(vectorClock[i], receivedTimestamp[i]);
-            }
 
             // Send a reply
             sendMessage(senderIndex, "REPLY");
+            numDeferredRequests++;
         }
+        System.out.println(numDeferredRequests + " replies sent to deferred requests, current number of deferred requests: " + deferredRequests.size());
         deferredRequests.clear();
         repliesReceived = 0; // reset the number of replies for the next request
         hasOutstandingRequest = false; // allow for another request to be sent out
