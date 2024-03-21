@@ -100,7 +100,9 @@ public class Node {
         Arrays.sort(hosts);
 
         // find the index of this process in the sorted arguments
-        localHostIndex = Arrays.asList(args).indexOf(args[0]);
+        localHostIndex = Arrays.asList(hosts).indexOf(localHost);
+        System.out.println(Arrays.toString(hosts) + " - local host " + localHost + " is at index " + localHostIndex);
+        System.out.println("Process index: " + localHostIndex);
 
         // initialize the vector clock
         vectorClock = new int[args.length];
@@ -117,8 +119,8 @@ public class Node {
             } else {
                 // for each provided host name that is not the local process, connect to it
                 // store the corresponding printwriter in an array parallel to the host index
-                String remoteHost = args[i];
-                System.out.println("Waiting for request from process " + i + ": " + remoteHost);
+                String remoteHost = hosts[i];
+                System.out.println("Waiting for connection from process " + i + ": " + remoteHost);
                 int remotePort = getPort(remoteHost);
                 int finalI = i;
                 new Thread(() -> {
@@ -325,7 +327,7 @@ public class Node {
         System.out.println(numDeferredRequests + " replies sent to deferred requests, current number of deferred requests: " + deferredRequests.size());
         deferredRequests.clear();
         repliesReceived = 0; // reset the number of replies for the next request
-        hasOutstandingRequest = false; // allow for another request to be sent out
+        //hasOutstandingRequest = false; // allow for another request to be sent out
         state = State.IDLE;
     }
 
@@ -336,11 +338,11 @@ public class Node {
         if (processIndex == localHostIndex) {
             System.out.println("Message is addressed to itself: " + message);
         }
-        if(processIndex < 0 || processIndex > 3) {
+        if(processIndex < 4 || processIndex > -1) { // check to make sure the process index is valid i.e. in range
             return processIndex;
         }
         else {
-            System.out.println("Invalid sender: " + message);
+            System.out.println("Invalid sender " + processIndex + " in message " + message);
         }
         return -1;
     }
