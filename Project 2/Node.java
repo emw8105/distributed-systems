@@ -2,7 +2,7 @@
 // This program is very similar to Project 1. It expands the causual ordering message algorithm
 // into a total ordering message algorithm. This is done by using process id's to break the ties
 // between the vector clocks that implement the Ricart-Agrawala algorithm
-// Hours spent: 24
+// Hours spent: 39
 
 import java.io.*;
 import java.net.*;
@@ -29,6 +29,7 @@ public class Node {
     private static List<String> remoteHosts = new ArrayList<>();
     private static boolean hasOutstandingRequest = false;
     private static int criticalSectionExecutions = 0;
+    private static Queue<Pair> messageBuffer = new ConcurrentLinkedQueue<>();
 
     // starts a server on the specified port
     private static void startServer(int port) {
@@ -45,8 +46,9 @@ public class Node {
                             String inputLine;
                             // read the input from the client
                             System.out.println("Listening for messages from connection");
-                            inputLine = in.readLine();
-                            while (inputLine != null) {
+
+                            while ((inputLine = in.readLine()) != null) {
+                                //System.out.println("Received message: " + inputLine);
                                 numMessagesDelivered++;
                                 onMessageReceived(inputLine);
                             }
@@ -142,23 +144,17 @@ public class Node {
 
         // broadcast 100 messages to all of the remote hosts
         for (int i = 1; i <= 100; i++) {
-            try {
-                //Thread.sleep(random.nextInt(10)); // Sleep for 1-10 milliseconds
-                Thread.sleep(100);
 
-                // prevent the process from sending more than one request broadcast at a time
-                // if the process currently has an outstanding request then stall until it has received the replies
-                if(hasOutstandingRequest || state == State.HELD) {
-                    while(hasOutstandingRequest || state == State.HELD) {
-                        try {
-                            Thread.sleep(20);
-                        } catch (InterruptedException ex) {
-                            ex.printStackTrace();
-                        }
+            // prevent the process from sending more than one request broadcast at a time
+            // if the process currently has an outstanding request then stall until it has received the replies
+            if(hasOutstandingRequest || state == State.HELD) {
+                while(hasOutstandingRequest || state == State.HELD) {
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException ex) {
+                        ex.printStackTrace();
                     }
                 }
-            } catch (InterruptedException e) {
-                e.printStackTrace();
             }
 
             // set the flag to be true to indicate there is a pending request now
@@ -191,13 +187,14 @@ public class Node {
         }
         try {
             Thread.sleep(1000); // Sleep for 1 second to ensure all messages are delivered
+            
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
         System.out.println("All messages delivered");
         System.out.println("Number of messages received: " + numMessagesDelivered);
         System.out.println("Final vector clock: " + Arrays.toString(vectorClock));
-        
+        System.out.println("Critical section executions: " + criticalSectionExecutions);
     }
 
     private static int getPort(String host) {
@@ -208,17 +205,13 @@ public class Node {
     private static synchronized void sendMessage(int processIndex, String messageType) {
         PrintWriter writer = writers[processIndex];
         vectorClock[localHostIndex]++;
-        try {
-            Thread.sleep(1000);
-        } catch(InterruptedException e) {
-            e.printStackTrace();
-        }
 
-        // MESSAGE FORMAT: "Message from <hostname> <host_index> with vector clock <vectorClock> type <messageType>"
+        // MESSAGE FORMAT: "<hostname> <host_index> with vector clock <vectorClock> type <messageType>"
         // send the message to the process
-        String message = "Message from " + localHost + " " + localHostIndex + " with vector clock " + Arrays.toString(vectorClock) + " type " + messageType;
+        String message = localHost + " " + localHostIndex + " with vector clock " + Arrays.toString(vectorClock) + " type " + messageType;
         writer.println(message);
         writer.flush();
+        System.out.println("Sent message: " + message);
 
         if (writer.checkError()) {
             System.out.println("An error occurred while sending the message: " + message);
@@ -267,42 +260,65 @@ public class Node {
         try {
             String messageType = parseMessageType(message); // parse the type from the received message (req or reply)
             int[] receivedTimestamp = parseVectorClock(message); // parse the vector clock from the received message
-            int senderIndex = getSenderIndex(message);
-            String hostName = hosts[senderIndex];
+            int senderIndex = getSenderIndex(message); // extract the sender index from the message
+            String hostName = hosts[senderIndex]; // use the sender index to get the host name
+            // add the message to the buffer
+            messageBuffer.add(new Pair(message, vectorClock));
 
+             // check for and deliver eligible messages
+            Iterator<Pair> iterator = messageBuffer.iterator();
+            while (iterator.hasNext()) {
+            Pair bufferedMessage = iterator.next();
+            if (isReadyForDelivery(bufferedMessage.message, receivedTimestamp, vectorClock)) {
+                System.out.println("Delivering: " + bufferedMessage.message);
+                iterator.remove();
+            }
+        }
+            
             // update the vector clock accordingly
+            vectorClock[localHostIndex]++; // increment the local process's vector clock
             for (int i = 0; i < vectorClock.length; i++) {
                 vectorClock[i] = Math.max(vectorClock[i], receivedTimestamp[i]);
             }
 
             if (messageType.equals("REQUEST")) {
-                System.out.println("Received request from process " + hostName);
+                System.out.println("Received request: " + message);
                 // handle request message
 
                 // compare the timestamps between the two processes to determine whether to reply or defer the request
                 // if currently holding or has a higher prio, then defer the request, otherwise send a reply
+                // if a message has a causal ordering violation, then buffer the message appropriately
 
-                if ((state == State.WANTED || state == State.HELD) && // check to see if this process currently needs access and will contest the request
-                    (vectorClock[localHostIndex] < receivedTimestamp[senderIndex]  // check if the requesting process has a higher timestamp
-                    || vectorClock[localHostIndex] == receivedTimestamp[senderIndex] && localHostIndex < senderIndex)) { // in case of a tie, check if the requesting process has a higher process id
-
-                    System.out.println("Received message from process " + hostName+ ", deferring until critical section access complete");
+                // if a process is currently in the critical section, defer the request to ensure mutual exclusion
+                if (state == State.HELD) {
+                    System.out.println("Deferring message as state is HELD: " + message);
                     deferredRequests.add(message);
+                    return;
+                }
+
+                else if (state == State.WANTED && // check to see if this process currently wants access and will contest the request
+                    (vectorClock[localHostIndex] < receivedTimestamp[senderIndex]  // check if the requesting process has a higher timestamp
+                    || (vectorClock[localHostIndex] == receivedTimestamp[senderIndex] && localHostIndex < senderIndex))) { // in case of a tie, check if the requesting process has a higher process id
+
+                    System.out.println("Deferring request from " + hostName + " until critical section access is granted");
+                    deferredRequests.add(message);
+                    
                 } else {
                     // send a reply to the requesting message
-                    System.out.println("Sending reply to process " + hostName + "'s request");
-                    sendMessage(senderIndex, "REPLY"); // 
+                    System.out.println("Request has higher priority, sending reply to " + hostName + "'s request");
+                    sendMessage(senderIndex, "REPLY");
                 }
             } else if (messageType.equals("REPLY")) {
-                System.out.println("Received reply from process " + hostName);
+                System.out.println("Received reply: " + message);
                 // handle reply message
                 repliesReceived++;
+                //System.out.println("Replies received: " + repliesReceived);
                 if (repliesReceived == remoteHosts.size()) {
                     criticalSection();
                 }
             }
             else {
-                System.out.println("Unknown message type: " + messageType);
+                System.out.println("Unknown message type in message: " + message);
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -327,18 +343,18 @@ public class Node {
         System.out.println(numDeferredRequests + " replies sent to deferred requests, current number of deferred requests: " + deferredRequests.size());
         deferredRequests.clear();
         repliesReceived = 0; // reset the number of replies for the next request
-        //hasOutstandingRequest = false; // allow for another request to be sent out
+        hasOutstandingRequest = false; // allow for another request to be sent out
         state = State.IDLE;
     }
 
-    // MESSAGE FORMAT: "Message from <hostname> <host_index> with vector clock <vectorClock> type <messageType>"
+    // MESSAGE FORMAT: "<hostname> <host_index> with vector clock <vectorClock> type <messageType>"
     private static int getSenderIndex(String message) {
         String[] parts = message.split(" ");
-        int processIndex = Integer.parseInt(parts[3]);
+        int processIndex = Integer.parseInt(parts[1]);
         if (processIndex == localHostIndex) {
             System.out.println("Message is addressed to itself: " + message);
         }
-        if(processIndex < 4 || processIndex > -1) { // check to make sure the process index is valid i.e. in range
+        if(processIndex <= 3 || processIndex >= 0) { // check to make sure the process index is valid i.e. in range from 0-3 inclusive
             return processIndex;
         }
         else {
@@ -370,5 +386,36 @@ public class Node {
 
         // otherwise, the inputs are valid
         return true;
+    }
+
+    private static boolean isReadyForDelivery(String message, int[] receivedTimestamp, int[] vectorClock) {
+        int senderIndex = getSenderIndex(message);
+        if (vectorClock[senderIndex] + 1 != receivedTimestamp[senderIndex]) {
+            return false;
+        }
+        for (int i = 0; i < vectorClock.length; i++) {
+            if (i != senderIndex && vectorClock[i] < receivedTimestamp[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+
+
+// Pair class to hold a message and its vector clock
+class Pair {
+    public String message;
+    public int[] vectorClock;
+
+    public Pair(String message, int[] vectorClock) {
+        this.message = message;
+        this.vectorClock = vectorClock;
+    }
+
+    @Override
+    public String toString() {
+        return message + " with vector clock " + Arrays.toString(vectorClock);
     }
 }
