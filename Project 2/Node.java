@@ -2,7 +2,7 @@
 // This program is very similar to Project 1. It expands the causual ordering message algorithm
 // into a total ordering message algorithm. This is done by using process id's to break the ties
 // between the vector clocks that implement the Ricart-Agrawala algorithm
-// Hours spent: 39
+// Hours spent: 40
 
 import java.io.*;
 import java.net.*;
@@ -161,6 +161,7 @@ public class Node {
             state = State.WANTED;
             hasOutstandingRequest = true;
 
+            vectorClock[localHostIndex]++;
             // for each broadcast, send a message to each connected process through their writer
             for (int j = 0; j < writers.length; j++) {
                 if(j == localHostIndex) {
@@ -204,7 +205,7 @@ public class Node {
     // manages the sending of messages, provide a process index to send to and the type in the form of "REQUEST" or "REPLY"
     private static synchronized void sendMessage(int processIndex, String messageType) {
         PrintWriter writer = writers[processIndex];
-        vectorClock[localHostIndex]++;
+        //vectorClock[localHostIndex]++;
 
         // MESSAGE FORMAT: "<hostname> <host_index> with vector clock <vectorClock> type <messageType>"
         // send the message to the process
@@ -306,6 +307,7 @@ public class Node {
                 } else {
                     // send a reply to the requesting message
                     System.out.println("Request has higher priority, sending reply to " + hostName + "'s request");
+                    vectorClock[localHostIndex]++;
                     sendMessage(senderIndex, "REPLY");
                 }
             } else if (messageType.equals("REPLY")) {
@@ -337,6 +339,7 @@ public class Node {
             int senderIndex = getSenderIndex(deferredRequest);
 
             // Send a reply
+            vectorClock[localHostIndex]++;
             sendMessage(senderIndex, "REPLY");
             numDeferredRequests++;
         }
